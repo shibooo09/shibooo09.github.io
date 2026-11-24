@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>✨ A Radiant Christmas</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #010005;
+    font-family: 'Times New Roman', 'Georgia', 'PingFang SC', serif;
+    cursor: crosshair;
+  }
+  canvas { display: block; position: fixed; inset: 0; z-index: 1; }
+  
+  /* 左侧文字排版 */
+  .greeting-box {
+    position: fixed;
+    left: 8vw;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    pointer-events: none;
+  }
+  
+  .title-en {
+    font-size: clamp(28px, 3.5vw, 48px);
+    color: #ffffff;
+    font-weight: normal;
+    letter-spacing: 0.08em;
+    line-height: 1.2;
+    text-shadow: 0 0 15px rgba(220, 240, 255, 0.9),
+                 0 0 35px rgba(170, 150, 255, 0.6),
+                 0 0 70px rgba(170, 150, 255, 0.3);
+    opacity: 0;
+    transform: translateY(20px);
+    transition: opacity 4s cubic-bezier(0.2, 0.8, 0.2, 1),
+                transform 4s cubic-bezier(0.2, 0.8, 0.2, 1);
+    /* 增加微弱的呼吸光效 */
+    animation: text-breathe 4s infinite alternate ease-in-out;
+  }
+  
+  .title-cn {
+    margin-top: 15px;
+    font-size: clamp(16px, 1.5vw, 22px); 
+    color: #d6e4ff;
+    letter-spacing: 0.25em;
+    font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    font-weight: 300;
+    text-shadow: 0 0 10px rgba(150, 190, 255, 0.8);
+    opacity: 0;
+    transform: translateY(15px);
+    transition: opacity 4s cubic-bezier(0.2, 0.8, 0.2, 1) 1s,
+                transform 4s cubic-bezier(0.2, 0.8, 0.2, 1) 1s;
+  }
+  
+  .show-text .title-en, .show-text .title-cn {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  @keyframes text-breathe {
+    0% { text-shadow: 0 0 15px rgba(220, 240, 255, 0.8), 0 0 35px rgba(170, 150, 255, 0.5), 0 0 70px rgba(170, 150, 255, 0.2); }
+    100% { text-shadow: 0 0 25px rgba(220, 240, 255, 1), 0 0 50px rgba(170, 150, 255, 0.8), 0 0 100px rgba(170, 150, 255, 0.4); }
+  }
+
+  .hint {
+    position: fixed;
+    bottom: 30px;
+    right: 40px;
+    z-index: 10;
+    color: rgba(255, 255, 255, 0.3);
+    font-size: 12px;
+    letter-spacing: 0.2em;
+    font-family: sans-serif;
+    opacity: 0;
+    transition: opacity 2s ease;
+    pointer-events: none;
+  }
+  .show-text .hint { opacity: 1; }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+
+<div class="greeting-box" id="greeting">
+  <div class="title-en">Merry Christmas</div>
+  <div class="title-cn">to：同学们</div>
+</div>
+<div class="hint">点击任意位置 释放烟花</div>
+
+<script>
+(() => {
+'use strict';
+
+// ==================== 基础工具 ====================
+const TAU = Math.PI * 2;
+const rand = (min, max) => Math.random() * (max - min) + min;
+const clamp01 = v => Math.max(0, Math.min(1, v));
+const easeInOutSine = t => -(Math.cos(Math.PI * t) - 1) / 2;
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+const greetingBox = document.getElementById('greeting');
+
+let W = 0, H = 0, DPR = 1;
+let globalTime = 0;
+let bgGradient = null;
+let auroraOffset = 0;
+
+// ==================== 核心容器 ====================
+const bgStars = [];
+const ambientDust = [];   
+const floatingOrbs = [];  
+const coreDust = [];      
+const starBulbs = [];     // 树体上的星芒大灯
+const mirrorDust = [];    // 冰面倒影粒子
+const baseRingDust = [];  
+const rockets = [];       
+const sparks = [];        
+const embers = [];        // 烟花余烬
+const flashes = [];       
+const shockwaves = [];    
+
+// 3D 空间配置
+const FOV = 800;
+const tree = {
+  cx: 0, baseY: 0, height: 0, baseRadius: 0, topY: 0,
+  angle: 0, speed: 0.12 
+};
+
+// 纯净高亮配色
+const COLORS = [
+  [255, 255, 255], [255, 255, 255], 
+  [200, 245, 255], [200, 245, 255],
+  [140, 255, 220], [210, 170, 255]  
+];
+
+// ==================== 光晕纹理 ====================
+const glowCache = new Map();
+function getGlow(r, g, b) {
+  const key = `${r},${g},${b}`;
+  if (glowCache.has(key)) return glowCache.get(key);
+  
+  const size = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const cx = c.getContext('2d');
+  
+  const grad = cx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.2, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.4, `rgba(${r},${g},${b},1)`);
+  grad.addColorStop(0.7, `rgba(${r},${g},${b},0.3)`);
+  grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+  
+  cx.fillStyle = grad;
+  cx.beginPath();
+  cx.arc(size/2, size/2, size/2, 0, TAU);
+  cx.fill();
+  
+  glowCache.set(key, c);
+  return c;
+}
+
+// ==================== 初始化 ====================
+function resize() {
+  const nw = window.innerWidth;
+  const nh = window.innerHeight;
+  
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = nw * DPR;
+  canvas.height = nh * DPR;
+  canvas.style.width = nw + 'px';
+  canvas.style.height = nh + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  
+  if (nw !== W || nh !== H) {
+    W = nw; H = nh;
+    buildScene();
+  }
+}
+
+function buildScene() {
+  // 1. 背景
+  bgGradient = ctx.createRadialGradient(W*0.6, H*0.4, 0, W*0.6, H*0.4, Math.max(W, H));
+  bgGradient.addColorStop(0, '#0a0716'); 
+  bgGradient.addColorStop(0.5, '#030208');
+  bgGradient.addColorStop(1, '#010103');
+
+  // 2. 背景星空
+  bgStars.length = 0;
+  for (let i = 0; i < W * H / 1000; i++) {
+    bgStars.push({
+      x: Math.random() * W, y: Math.random() * H,
+      r: rand(0.5, 1.5), alpha: rand(0.1, 0.8),
+      speed: rand(0.5, 2), phase: Math.random() * TAU
+    });
+  }
+
+  // 3. 环境星尘
+  ambientDust.length = 0;
+  for (let i = 0; i < 150; i++) {
+    ambientDust.push({
+      x: Math.random() * W, y: Math.random() * H,
+      vy: rand(0.2, 0.8), vx: rand(-0.2, 0.2),
+      size: rand(1, 3), alpha: rand(0.1, 0.4), 
+      phase: Math.random() * TAU, glow: getGlow(180, 230, 255)
+    });
+  }
+
+  // 4. 悬浮光球
+  floatingOrbs.length = 0;
+  for (let i = 0; i < 25; i++) {
+    let x = Math.random() * W;
+    let y = Math.random() * H;
+    if (Math.abs(x - W*0.6) < W*0.2 && Math.abs(y - H*0.6) < H*0.4) {
+      x = x < W*0.5 ? x * 0.5 : W - (W - x) * 0.5;
+    }
+    floatingOrbs.push({
+      x, y, baseX: x, baseY: y,
+      size: rand(8, 25), speed: rand(0.5, 1.5),
+      phase: Math.random() * TAU, glow: getGlow(150, 200, 255)
+    });
+  }
+
+  // 5. 树体参数 
+  tree.height = Math.min(H * 0.85, 950); 
+  tree.baseRadius = tree.height * 0.36;
+  tree.cx = W > 768 ? W * 0.62 : W * 0.5; 
+  tree.baseY = H * 0.86; 
+  tree.topY = tree.baseY - tree.height;
+
+  // 6. 生成 3D 树体粒子
+  coreDust.length = 0;
+  mirrorDust.length = 0;
+  starBulbs.length = 0;
+  const dustCount = 8500; 
+
+  for (let i = 0; i < dustCount; i++) {
+    const t = Math.pow(Math.random(), 0.7); 
+    const y = t * tree.height; 
+    
+    const tierProgress = (t * 6) % 1;
+    const tierRadiusOffset = Math.sin(tierProgress * Math.PI) * 0.1;
+    const maxR = tree.baseRadius * (1 - t) * (1 + tierRadiusOffset);
+    
+    const isSurface = Math.random() > 0.2;
+    const r = isSurface ? maxR * rand(0.95, 1.05) : maxR * Math.random();
+    const angle = Math.random() * TAU;
+    
+    const lx = Math.cos(angle) * r;
+    const lz = Math.sin(angle) * r;
+    const col = COLORS[Math.floor(Math.random() * COLORS.length)];
+    
+    const side = Math.random() > 0.5 ? 1 : -1;
+    const startX = tree.cx + side * rand(W*0.2, W*0.6);
+    const startY = tree.baseY - rand(-100, H*0.5); 
+    
+    // 主粒子
+    coreDust.push({
+      tx: lx, ty: y, tz: lz, t,
+      cx: startX, cy: startY, cz: rand(-500, 500), 
+      startX, startY,
+      color: col, glow: getGlow(...col),
+      size: (isSurface ? rand(3.5, 7.0) : rand(1.5, 4.0)) * (1 - t * 0.3),
+      delay: 1.0 + t * 7.0 + rand(0, 1.5), 
+      duration: rand(3.0, 5.0), 
+      twinkleSpeed: rand(1.5, 3.5), twinklePhase: Math.random() * TAU,
+      arrived: false
+    });
+
+    // 随机抽取极少量的粒子作为“星芒大灯”
+    if (isSurface && Math.random() > 0.985) {
+      starBulbs.push({
+        tx: lx, ty: y, tz: lz,
+        color: col, glow: getGlow(...col),
+        delay: 1.0 + t * 7.0, 
+        phase: Math.random() * TAU
+      });
+    }
+  }
+
+  // 7. 魔法阵底座周围的光点
+  baseRingDust.length = 0;
+  for (let i = 0; i < 100; i++) {
+    baseRingDust.push({
+      angle: Math.random() * TAU,
+      radius: tree.baseRadius * rand(1.0, 1.4),
+      speed: rand(0.2, 0.6) * (Math.random() > 0.5 ? 1 : -1),
+      yOffset: rand(-20, 20),
+      size: rand(2, 6),
+      phase: Math.random() * TAU,
+      glow: getGlow(120, 200, 255)
+    });
+  }
+}
+
+// ==================== 烟花系统 ====================
+const FW_COLORS = [[255, 80, 120], [255, 180, 80], [100, 200, 255], [180, 100, 255], [100, 255, 180], [255, 255, 200]];
+function launchRocket(tx, ty) {
+  const color = FW_COLORS[Math.floor(Math.random() * FW_COLORS.length)];
+  const sx = tx + rand(-W*0.05, W*0.05), sy = H + 20;
+  const duration = rand(40, 60), gravity = 0.06;
+  rockets.push({
+    x: sx, y: sy, px: sx, py: sy,
+    vx: (tx - sx) / duration, vy: (ty - sy) / duration - 0.5 * gravity * duration,
+    gravity, life: 0, duration, color, glow: getGlow(...color)
+  });
+}
+
+function explode(x, y, color) {
+  const isMega = Math.random() > 0.6; 
+  const count = isMega ? Math.floor(rand(150, 250)) : Math.floor(rand(80, 120));
+  const speed = isMega ? rand(5, 12) : rand(3, 6);
+  
+  shockwaves.push({ x, y, life: 0, maxLife: 25, color: color });
+
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * TAU;
+    let sp = speed * Math.pow(Math.random(), 0.4);
+    if (isMega && i % 2 === 0) sp *= 0.6;
+    const c = Math.random() > 0.85 ? FW_COLORS[Math.floor(Math.random() * FW_COLORS.length)] : color;
+    
+    sparks.push({
+      x, y, px: x, py: y,
+      vx: Math.cos(angle) * sp, vy: Math.sin(angle) * sp,
+      gravity: 0.08, life: 0, maxLife: rand(60, 140), 
+      color: c, glow: getGlow(...c), size: isMega ? rand(2, 5) : rand(1, 3)
+    });
+
+    // 生成下落的余烬（20%概率）
+    if (Math.random() > 0.8) {
+      embers.push({
+        x, y,
+        vx: Math.cos(angle) * sp * 0.3,
+        vy: Math.sin(angle) * sp * 0.3,
+        life: 0, maxLife: rand(100, 200),
+        glow: getGlow(...c), size: rand(0.5, 2)
+      });
+    }
+  }
+  flashes.push({ x, y, life: 0, maxLife: isMega ? 30 : 15, size: isMega ? 400 : 200, glow: getGlow(...color) });
+}
+
+// ==================== 渲染主循环 ====================
+let lastTime = 0, startTime = 0, textShown = false, nextFwTime = 10.0;
+
+function render(now) {
+  requestAnimationFrame(render);
+  
+  if (!startTime) { startTime = now; lastTime = now; }
+  globalTime = (now - startTime) / 1000;
+  const dt = Math.min((now - lastTime) / 16.666, 3);
+  lastTime = now;
+
+  tree.angle += tree.speed * (dt / 60);
+  auroraOffset += 0.002 * dt;
+
+  // 1. 背景
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = bgGradient;
+  ctx.fillRect(0, 0, W, H);
+
+  // 1.5 极光流动效果 (仅轻度渲染)
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.05 + 0.02 * Math.sin(globalTime * 0.5);
+  const auroraGrad = ctx.createLinearGradient(0, 0, W, H);
+  auroraGrad.addColorStop(0, 'rgba(80, 120, 255, 1)');
+  auroraGrad.addColorStop(0.5 + 0.2 * Math.sin(auroraOffset), 'rgba(140, 255, 220, 0)');
+  auroraGrad.addColorStop(1, 'rgba(210, 170, 255, 1)');
+  ctx.fillStyle = auroraGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  // 2. 背景星空
+  for (let s of bgStars) {
+    const alpha = s.alpha * (0.6 + 0.4 * Math.sin(globalTime * s.speed + s.phase));
+    ctx.globalAlpha = alpha; ctx.fillStyle = '#e0e8ff';
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, TAU); ctx.fill();
+  }
+
+  // 3. 环境点缀
+  for (let p of ambientDust) {
+    p.y += p.vy * dt;
+    p.x += Math.sin(globalTime * 2 + p.phase) * 0.5 * dt + p.vx * dt;
+    if (p.y > H) { p.y = -10; p.x = Math.random() * W; }
+    const twinkle = 0.5 + 0.5 * Math.sin(globalTime * 3 + p.phase);
+    ctx.globalAlpha = p.alpha * twinkle;
+    const sz = p.size * 3; ctx.drawImage(p.glow, p.x - sz/2, p.y - sz/2, sz, sz);
+  }
+
+  for (let o of floatingOrbs) {
+    const floatY = o.baseY + Math.sin(globalTime * o.speed + o.phase) * 30;
+    const floatX = o.baseX + Math.cos(globalTime * o.speed * 0.7 + o.phase) * 20;
+    const twinkle = 0.3 + 0.7 * Math.sin(globalTime * 2 + o.phase);
+    ctx.globalAlpha = twinkle * 0.3; 
+    const sz = o.size * (1 + 0.2 * twinkle); ctx.drawImage(o.glow, floatX - sz/2, floatY - sz/2, sz, sz);
+  }
+
+  // 4. 树体背后的体积光晕
+  const treeGlowAlpha = clamp01((globalTime - 3.0) / 4.0);
+  if (treeGlowAlpha > 0) {
+    ctx.globalAlpha = treeGlowAlpha * 0.15;
+    const bgSize = tree.baseRadius * 4;
+    ctx.drawImage(getGlow(100, 150, 255), 
+      tree.cx - bgSize/2, tree.baseY - tree.height*0.4 - bgSize/2, 
+      bgSize, bgSize);
+  }
+
+  // 5. 绘制 3D 魔法阵底座
+  const baseAlpha = clamp01((globalTime - 1.0) / 2.0);
+  if (baseAlpha > 0) {
+    const cosA = Math.cos(tree.angle);
+    const sinA = Math.sin(tree.angle);
+
+    // 绘制魔法阵
+    ctx.save();
+    ctx.translate(tree.cx, tree.baseY);
+    ctx.scale(1, 0.3); 
+    for (let i = 0; i < 3; i++) {
+      const ringR = tree.baseRadius * (1.1 + i * 0.15);
+      const ringAlpha = baseAlpha * (0.6 - i * 0.15);
+      ctx.globalAlpha = ringAlpha;
+      ctx.strokeStyle = `rgba(120, 200, 255, 0.8)`;
+      ctx.lineWidth = 2 / 0.3; 
+      ctx.beginPath(); ctx.arc(0, 0, ringR, 0, TAU); ctx.stroke();
+      
+      if (i === 0) {
+        ctx.lineWidth = 1.5 / 0.3;
+        for (let j = 0; j < 16; j++) {
+          const ang = (j / 16) * TAU + tree.angle * 2;
+          const x1 = Math.cos(ang) * ringR;
+          const y1 = Math.sin(ang) * ringR;
+          const x2 = Math.cos(ang) * (ringR - 10);
+          const y2 = Math.sin(ang) * (ringR - 10);
+          ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
+
+    // 底座周围粒子
+    ctx.globalAlpha = baseAlpha;
+    for (let p of baseRingDust) {
+      p.angle += p.speed * (dt / 60);
+      const rX = Math.cos(p.angle) * p.radius;
+      const rZ = Math.sin(p.angle) * p.radius;
+      const rx = rX * cosA - rZ * sinA;
+      const rz = rX * sinA + rZ * cosA;
+      const scale = FOV / (FOV + rz + tree.baseRadius);
+      const sx = tree.cx + rx * scale;
+      const sy = tree.baseY - p.yOffset * scale + Math.sin(globalTime * 2 + p.phase) * 10;
+      const sz = p.size * scale;
+      ctx.drawImage(p.glow, sx - sz/2, sy - sz/2, sz, sz);
+    }
+  }
+
+  // 6. 准备 3D 渲染队列
+  const renderQueue = [];
+  const cosA = Math.cos(tree.angle);
+  const sinA = Math.sin(tree.angle);
+
+  for (let p of coreDust) {
+    const progress = clamp01((globalTime - p.delay) / p.duration);
+    if (progress <= 0) continue;
+
+    if (!p.arrived) {
+      const easeP = easeInOutSine(progress);
+      const arcX = Math.sin(progress * Math.PI) * (p.startX - p.tx) * 0.2;
+      const arcY = Math.sin(progress * Math.PI) * 100;
+      
+      p.cx = p.startX + (p.tx - p.startX) * easeP + arcX * (1 - easeP);
+      p.cy = p.startY + (p.ty - p.startY) * easeP + arcY * (1 - easeP);
+      p.cz = p.cz + (p.tz - p.cz) * easeP; 
+      
+      if (progress >= 1) { p.arrived = true; p.cx = p.tx; p.cy = p.ty; p.cz = p.tz; }
+    }
+
+    const rx = p.cx * cosA - p.cz * sinA;
+    const rz = p.cx * sinA + p.cz * cosA;
+    const scale = FOV / (FOV + rz + tree.baseRadius);
+    const sx = tree.cx + rx * scale;
+    const sy = tree.baseY - p.cy * scale;
+
+    renderQueue.push({ p, progress, rz, sx, sy, scale });
+  }
+
+  renderQueue.sort((a, b) => b.rz - a.rz);
+
+  // 7. 渲染冰面倒影 (在魔法阵表面，反向画树体，极度模糊，极低透明度)
+  ctx.globalAlpha = 0.08;
+  for (let item of renderQueue) {
+    if (!item.p.arrived) continue;
+    const { sx, sy, scale } = item;
+    const mirrorY = tree.baseY + (tree.baseY - sy) * 0.6; // 倒影位置
+    if (mirrorY > tree.baseY + 200) continue; // 限制范围
+    const sz = item.p.size * 2 * scale;
+    
+    // 使用蓝色光晕作为倒影
+    ctx.drawImage(getGlow(100, 180, 255), sx - sz/2, mirrorY - sz/2, sz, sz);
+  }
+
+  // 8. 渲染树体粒子
+  for (let item of renderQueue) {
+    const { p, progress, sx, sy, scale, rz } = item;
+    
+    if (!p.arrived) {
+      ctx.globalAlpha = progress * 0.9;
+      const sz = p.size * 1.5 * scale;
+      ctx.drawImage(p.glow, sx - sz/2, sy - sz/2, sz, sz);
+    } else {
+      const depthAlpha = clamp01(0.5 + (1 - (rz + tree.baseRadius) / (tree.baseRadius * 2)) * 0.5);
+      const twinkle = 0.6 + 0.4 * Math.sin(globalTime * p.twinkleSpeed + p.twinklePhase);
+      ctx.globalAlpha = depthAlpha * (0.8 + 0.2 * twinkle); 
+      const sz = p.size * (1.0 + 0.15 * twinkle) * scale;
+      ctx.drawImage(p.glow, sx - sz/2, sy - sz/2, sz, sz);
+    }
+  }
+
+  // 9. 渲染“主灯”星芒
+  for (let b of starBulbs) {
+    const pProgress = clamp01((globalTime - b.delay) / 2.0);
+    if (pProgress <= 0) continue;
+
+    const rx = b.tx * cosA - b.tz * sinA;
+    const rz = b.tx * sinA + b.tz * cosA;
+    const scale = FOV / (FOV + rz + tree.baseRadius);
+    const sx = tree.cx + rx * scale;
+    const sy = tree.baseY - b.ty * scale;
+
+    const twinkle = 0.5 + 0.5 * Math.sin(globalTime * 3 + b.phase);
+    ctx.globalAlpha = pProgress * twinkle;
+
+    // 星芒十字线
+    const len = 30 * twinkle * scale;
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(globalTime * 0.5 + b.phase);
+    // 横向光柱
+    ctx.drawImage(b.glow, -len, -2, len*2, 4);
+    // 纵向光柱
+    ctx.rotate(Math.PI / 2);
+    ctx.drawImage(b.glow, -len, -2, len*2, 4);
+    ctx.restore();
+  }
+
+  // 10. 树顶星光
+  const starAlpha = clamp01((globalTime - 8.5) / 1.5);
+  if (starAlpha > 0) {
+    const pulse = 1 + 0.1 * Math.sin(globalTime * 4);
+    ctx.globalAlpha = starAlpha;
+    const scale = FOV / (FOV + tree.baseRadius);
+    const sX = tree.cx;
+    const sY = tree.baseY - tree.height * scale;
+    
+    const glowSize = 350 * pulse * scale;
+    ctx.drawImage(getGlow(255, 240, 200), sX - glowSize/2, sY - glowSize/2, glowSize, glowSize);
+    ctx.save();
+    ctx.translate(sX, sY);
+    ctx.rotate(globalTime * 0.2); 
+    for (let i = 0; i < 4; i++) {
+      ctx.rotate(Math.PI / 2);
+      const len = i % 2 === 0 ? 220 : 110;
+      ctx.drawImage(getGlow(255, 255, 255), -4, -len * pulse * scale, 8, len * 2 * pulse * scale);
+    }
+    ctx.restore();
+  }
+
+  // 11. 文字出现
+  if (globalTime > 10.0 && !textShown) {
+    textShown = true;
+    greetingBox.classList.add('show-text');
+  }
+
+  // 12. 烟花
+  if (globalTime > 8.0 && globalTime > nextFwTime) {
+    nextFwTime = globalTime + rand(0.8, 2.0); 
+    launchRocket(rand(W * 0.15, W * 0.85), rand(H * 0.05, H * 0.4));
+  }
+
+  for (let i = rockets.length - 1; i >= 0; i--) {
+    const r = rockets[i];
+    r.px = r.x; r.py = r.y;
+    r.x += r.vx * dt; r.y += r.vy * dt; r.vy += r.gravity * dt; r.life += dt;
+    ctx.globalAlpha = 1; ctx.strokeStyle = `rgba(255,255,255,0.9)`; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(r.px, r.py); ctx.lineTo(r.x, r.y); ctx.stroke();
+    const sz = 20; ctx.drawImage(r.glow, r.x - sz/2, r.y - sz/2, sz, sz);
+    if (r.life >= r.duration) { explode(r.x, r.y, r.color); rockets.splice(i, 1); }
+  }
+
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const s = sparks[i];
+    s.px = s.x; s.py = s.y; s.x += s.vx * dt; s.y += s.vy * dt; s.vy += s.gravity * dt;
+    const damp = Math.pow(0.96, dt); s.vx *= damp; s.vy *= damp; s.life += dt;
+    const p = 1 - s.life / s.maxLife;
+    if (p <= 0) { sparks.splice(i, 1); continue; }
+    ctx.globalAlpha = p * p; 
+    ctx.strokeStyle = `rgba(255,255,255,${p * 0.6})`; ctx.lineWidth = s.size * p;
+    ctx.beginPath(); ctx.moveTo(s.px, s.py); ctx.lineTo(s.x, s.y); ctx.stroke();
+    const sz = s.size * 8 * p; ctx.drawImage(s.glow, s.x - sz/2, s.y - sz/2, sz, sz);
+  }
+
+  // 渲染余烬 (极其细小的灰烬下落)
+  for (let i = embers.length - 1; i >= 0; i--) {
+    const e = embers[i];
+    e.x += e.vx * dt; e.y += e.vy * dt;
+    e.vy += 0.02 * dt; // 极小的重力，飘落感
+    e.vx *= Math.pow(0.98, dt);
+    e.life += dt;
+    const p = 1 - e.life / e.maxLife;
+    if (p <= 0) { embers.splice(i, 1); continue; }
+    
+    ctx.globalAlpha = p * 0.6;
+    const sz = e.size * 3 * p;
+    ctx.drawImage(e.glow, e.x - sz/2, e.y - sz/2, sz, sz);
+  }
+
+  for (let i = shockwaves.length - 1; i >= 0; i--) {
+    const w = shockwaves[i]; w.life += dt; const p = w.life / w.maxLife;
+    if (p >= 1) { shockwaves.splice(i, 1); continue; }
+    ctx.globalAlpha = (1 - p) * 0.6;
+    ctx.strokeStyle = `rgb(${w.color[0]},${w.color[1]},${w.color[2]})`;
+    ctx.lineWidth = 3 * (1 - p);
+    ctx.beginPath(); ctx.arc(w.x, w.y, p * 250, 0, TAU); ctx.stroke();
+  }
+
+  for (let i = flashes.length - 1; i >= 0; i--) {
+    const f = flashes[i]; f.life += dt; const p = f.life / f.maxLife;
+    if (p >= 1) { flashes.splice(i, 1); continue; }
+    const sz = f.size * (1 + p * 2); ctx.globalAlpha = (1 - p) * 0.9;
+    ctx.drawImage(f.glow, f.x - sz/2, f.y - sz/2, sz, sz);
+  }
+
+  // 13. 全屏暗角 (Vignette)
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  const vigGrad = ctx.createRadialGradient(W/2, H/2, Math.min(W,H)*0.4, W/2, H/2, Math.max(W,H)*0.8);
+  vigGrad.addColorStop(0, 'rgba(0,0,0,0)');
+  vigGrad.addColorStop(1, 'rgba(0,0,0,0.6)');
+  ctx.fillStyle = vigGrad;
+  ctx.fillRect(0, 0, W, H);
+}
+
+// ==================== 事件 ====================
+window.addEventListener('resize', () => {
+  clearTimeout(window.resizeTimer);
+  window.resizeTimer = setTimeout(resize, 200);
+});
+window.addEventListener('pointerdown', (e) => { 
+  launchRocket(e.clientX, e.clientY); 
+});
+
+resize();
+requestAnimationFrame(render);
+
+})();
+</script>
+</body>
+</html>
